@@ -53,7 +53,9 @@ function telegramDevPlugin(): Plugin {
               return res.end(
                 JSON.stringify({
                   ok: false,
-                  code: 'INVALID_TOKEN',
+                  botVerified: false,
+                  delivered: false,
+                  code: botCheck.code || 'INVALID_TOKEN',
                   error: `Telegram bot verification failed: ${botCheck.error}`,
                 })
               );
@@ -67,13 +69,15 @@ function telegramDevPlugin(): Plugin {
             res.end(
               JSON.stringify({
                 ok: sendResult.ok,
+                botVerified: true,
                 delivered: sendResult.delivered,
                 botUsername: botCheck.botUsername,
                 chatId: maskChatId(chatId),
                 messageId: sendResult.messageId,
                 message: sendResult.ok
                   ? `Connection verified! Test alert delivered to Chat ID ${maskChatId(chatId)} via ${botCheck.botUsername || 'bot'}.`
-                  : sendResult.error,
+                  : `Bot verified (${botCheck.botUsername || 'active'}), but test message delivery failed: ${sendResult.error}`,
+                error: sendResult.ok ? undefined : sendResult.error,
               })
             );
           } catch (err: unknown) {

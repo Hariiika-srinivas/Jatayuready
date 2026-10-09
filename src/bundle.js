@@ -48026,11 +48026,13 @@ var OU = [`item`],
                                     g(`Testing Telegram Bot API connection...`);
                                     testTelegramConnection().then(res => {
                                       if (res && res.ok) {
-                                        g(`✓ ` + (res.message || `Telegram connection verified!`));
+                                        g(`✓ ` + (res.message || `Telegram connection verified & test alert delivered!`));
+                                      } else if (res && res.botVerified && !res.delivered) {
+                                        g(`⚠️ Bot verified (${res.botUsername || 'active'}), but test delivery failed: ` + (res.error || 'Chat ID not found. Ensure recipient user clicked /start with the bot.'));
                                       } else {
                                         g(`✗ Telegram test failed: ` + ((res && res.error) || `Missing server credentials`));
                                       }
-                                      setTimeout(() => g(null), 6000);
+                                      setTimeout(() => g(null), 8000);
                                     });
                                   },
                                   className: `px-2 py-0.5 rounded bg-[#17171C] hover:bg-[#26262E] border border-[#00E5FF]/40 text-[#00E5FF] text-[10px] font-mono-code transition cursor-pointer`,
@@ -48937,8 +48939,8 @@ function zU() {
       score: 74,
       level: `HIGH`,
       threshold: 65,
-      autoTriggerArmed: true,
-      lastTrigger: 0,
+      autoTriggerArmed: false,
+      lastTrigger: Date.now(),
       cooldownSec: 180,
       isMuted: false,
     }),

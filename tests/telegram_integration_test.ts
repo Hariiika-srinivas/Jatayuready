@@ -6,6 +6,8 @@ import {
   maskChatId,
   sendTelegramAlert,
   verifyTelegramBot,
+  sanitizeBotToken,
+  sanitizeChatId,
   TelegramAlertPayload
 } from '../src/services/telegramService';
 
@@ -29,6 +31,20 @@ async function runTests() {
   assert(maskChatId('123456789') === '123***789', 'Mask Chat ID standard format');
   assert(maskChatId('-100192837465') === '-10***465', 'Mask Chat ID channel format');
   assert(maskChatId('') === '', 'Mask Chat ID handles empty string');
+
+  // Test 1b: Token Sanitization (Prevents 404 Not Found from Telegram API)
+  assert(sanitizeBotToken('123456:ABC-DEF') === '123456:ABC-DEF', 'Token sanitize: clean token untouched');
+  assert(sanitizeBotToken('bot123456:ABC-DEF') === '123456:ABC-DEF', 'Token sanitize: strips duplicate bot prefix');
+  assert(sanitizeBotToken('<123456:ABC-DEF>') === '123456:ABC-DEF', 'Token sanitize: strips angle brackets');
+  assert(sanitizeBotToken('"123456:ABC-DEF"') === '123456:ABC-DEF', 'Token sanitize: strips double quotes');
+  assert(sanitizeBotToken("'123456:ABC-DEF'") === '123456:ABC-DEF', 'Token sanitize: strips single quotes');
+  assert(sanitizeBotToken('https://api.telegram.org/bot123456:ABC-DEF/getMe') === '123456:ABC-DEF', 'Token sanitize: extracts token from full URL');
+  assert(sanitizeBotToken('  bot123456:ABC-DEF/  ') === '123456:ABC-DEF', 'Token sanitize: trims whitespace and slashes');
+
+  // Test 1c: Chat ID Sanitization
+  assert(sanitizeChatId('"12345678"') === '12345678', 'Chat ID sanitize: strips quotes');
+  assert(sanitizeChatId('<-10012345678>') === '-10012345678', 'Chat ID sanitize: strips brackets');
+  assert(sanitizeChatId('  -10012345678  ') === '-10012345678', 'Chat ID sanitize: trims whitespace');
 
   // Test 2: Message formatting for Event A (predictive_risk)
   const predictivePayload: TelegramAlertPayload = {

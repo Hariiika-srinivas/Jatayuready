@@ -55,7 +55,9 @@ app.all('/api/telegram-test', async (req: Request, res: Response) => {
     if (!botCheck.ok) {
       return res.status(401).json({
         ok: false,
-        code: 'INVALID_TOKEN',
+        botVerified: false,
+        delivered: false,
+        code: botCheck.code || 'INVALID_TOKEN',
         error: `Telegram bot verification failed: ${botCheck.error}`
       });
     }
@@ -66,11 +68,19 @@ app.all('/api/telegram-test', async (req: Request, res: Response) => {
     });
 
     if (!sendResult.ok) {
-      return res.status(400).json(sendResult);
+      return res.status(400).json({
+        ok: false,
+        botVerified: true,
+        delivered: false,
+        botUsername: botCheck.botUsername,
+        chatId: maskChatId(chatId),
+        error: `Bot verified (${botCheck.botUsername || 'active'}), but test message delivery failed: ${sendResult.error}`
+      });
     }
 
     return res.status(200).json({
       ok: true,
+      botVerified: true,
       delivered: true,
       botUsername: botCheck.botUsername,
       chatId: maskChatId(chatId),

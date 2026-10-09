@@ -33,23 +33,33 @@ export default async function handler(req: any, res: any) {
     if (!botCheck.ok) {
       return res.status(401).json({
         ok: false,
-        code: 'INVALID_TOKEN',
+        botVerified: false,
+        delivered: false,
+        code: botCheck.code || 'INVALID_TOKEN',
         error: `Telegram bot verification failed: ${botCheck.error}`
       });
     }
 
-    // Step 2: send test message
+    // Step 2: send test message to configured chat
     const sendResult = await sendTelegramAlert({
       eventType: 'test',
       testNotes: `Direct connection verification requested from JATAYU Command Center. Bot: ${botCheck.botUsername || 'Active'}`
     });
 
     if (!sendResult.ok) {
-      return res.status(400).json(sendResult);
+      return res.status(400).json({
+        ok: false,
+        botVerified: true,
+        delivered: false,
+        botUsername: botCheck.botUsername,
+        chatId: maskChatId(chatId),
+        error: `Bot verified (${botCheck.botUsername || 'active'}), but test message delivery failed: ${sendResult.error}`
+      });
     }
 
     return res.status(200).json({
       ok: true,
+      botVerified: true,
       delivered: true,
       botUsername: botCheck.botUsername,
       chatId: maskChatId(chatId),

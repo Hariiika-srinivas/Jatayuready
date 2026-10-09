@@ -41,6 +41,7 @@ export interface TelegramAlertPayload {
 export interface TelegramResponse {
   ok: boolean;
   delivered?: boolean;
+  botVerified?: boolean;
   duplicate?: boolean;
   message?: string;
   error?: string;
@@ -68,6 +69,69 @@ if (typeof cleanInterval === 'object' && cleanInterval !== null && 'unref' in cl
   (cleanInterval as { unref: () => void }).unref();
 }
 
+/**
+ * Sanitizes and extracts the pure Telegram Bot Token.
+ * Handles common user configuration mistakes:
+ * - Accidental quotes: "123456:ABC" -> 123456:ABC
+ * - Accidental angle brackets: <123456:ABC> -> 123456:ABC
+ * - Accidental 'bot' prefix: bot123456:ABC -> 123456:ABC
+ * - Accidental full URL: https://api.telegram.org/bot123456:ABC/getMe -> 123456:ABC
+ * - Leading/trailing spaces, newlines, and slashes
+ */
+export function sanitizeBotToken(rawToken: string | undefined): string {
+  if (!rawToken) return '';
+  let token = rawToken.trim();
+
+  // Strip wrapping double or single quotes
+  if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+    token = token.slice(1, -1).trim();
+  }
+
+  // Strip wrapping angle brackets
+  if (token.startsWith('<') && token.endsWith('>')) {
+    token = token.slice(1, -1).trim();
+  }
+
+  // Extract token if full Telegram URL was pasted
+  const urlMatch = token.match(/(?:https?:\/\/)?api\.telegram\.org\/bot([^\s/]+)/i);
+  if (urlMatch && urlMatch[1]) {
+    token = urlMatch[1].trim();
+  }
+
+  // Strip accidental 'bot' prefix if followed by bot ID digits and colon
+  if (token.toLowerCase().startsWith('bot')) {
+    const remainder = token.slice(3).trim();
+    if (/^\d+:/.test(remainder)) {
+      token = remainder;
+    }
+  }
+
+  // Strip any trailing slashes or whitespace
+  return token.replace(/\/+$/, '').trim();
+}
+
+/**
+ * Sanitizes Telegram Chat ID.
+ * Handles quotes, spaces, and preserves channel usernames (@my_channel).
+ */
+export function sanitizeChatId(rawChatId: string | undefined): string {
+  if (!rawChatId) return '';
+  let chatId = rawChatId.trim();
+
+  if ((chatId.startsWith('"') && chatId.endsWith('"')) || (chatId.startsWith("'") && chatId.endsWith("'"))) {
+    chatId = chatId.slice(1, -1).trim();
+  }
+
+  if (chatId.startsWith('<') && chatId.endsWith('>')) {
+    chatId = chatId.slice(1, -1).trim();
+  }
+
+  return chatId.trim();
+}
+
+/**
+ * Safely masks chat ID for display in UI and logs without revealing the full ID.
+ */
 export function maskChatId(chatId: string): string {
   if (!chatId) return '';
   const str = String(chatId).trim();
@@ -218,29 +282,87 @@ export function formatTelegramMessage(payload: TelegramAlertPayload): { text: st
 /**
  * Verifies bot configuration via getMe
  */
-export async function verifyTelegramBot(): Promise<{ ok: boolean; botUsername?: string; error?: string }> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token || !token.trim()) {
-    return { ok: false, error: 'TELEGRAM_BOT_TOKEN environment variable is not configured on the server.' };
+export async function verifyTelegramBot(): Promise<{
+  ok: boolean;
+  botUsername?: string;
+  botId?: number;
+  error?: string;
+  code?: string;
+}> {
+  const rawToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!rawToken || !rawToken.trim()) {
+    return {
+      ok: false,
+      code: 'MISSING_CREDENTIALS',
+      error: 'TELEGRAM_BOT_TOKEN environment variable is not configured on the server.'
+    };
+  }
+
+  const cleanToken = sanitizeBotToken(rawToken);
+  if (!cleanToken) {
+    return {
+      ok: false,
+      code: 'EMPTY_TOKEN',
+      error: 'TELEGRAM_BOT_TOKEN is empty after stripping whitespace.'
+    };
+  }
+
+  // Pre-validate token structure
+  if (!/^\d+:/.test(cleanToken)) {
+    return {
+      ok: false,
+      code: 'INVALID_TOKEN_FORMAT',
+      error: "TELEGRAM_BOT_TOKEN format is invalid. Telegram bot tokens must start with numerical bot ID followed by a colon (e.g. 123456789:AA...). Do not include 'bot' prefix or '<>' brackets."
+    };
   }
 
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
-    const resp = await fetch(`https://api.telegram.org/bot${token.trim()}/getMe`, {
+    const getMeUrl = `https://api.telegram.org/bot${cleanToken}/getMe`;
+
+    const resp = await fetch(getMeUrl, {
       method: 'GET',
       signal: controller.signal
     });
     clearTimeout(timeout);
 
     const data = await resp.json();
+
     if (!data.ok) {
-      return { ok: false, error: data.description || 'Invalid bot token or Telegram Bot API error' };
+      if (data.error_code === 404 || resp.status === 404) {
+        return {
+          ok: false,
+          code: 'TELEGRAM_404',
+          error: "Telegram API returned 404 Not Found. Ensure TELEGRAM_BOT_TOKEN in Vercel settings contains only the token (e.g. 123456789:ABC...), without quotes, brackets, or the 'bot' prefix."
+        };
+      }
+      if (data.error_code === 401 || resp.status === 401) {
+        return {
+          ok: false,
+          code: 'TELEGRAM_401',
+          error: 'Unauthorized: Telegram Bot Token is invalid or was revoked in @BotFather.'
+        };
+      }
+      return {
+        ok: false,
+        code: `TELEGRAM_${data.error_code || resp.status}`,
+        error: data.description || 'Telegram Bot API error.'
+      };
     }
-    return { ok: true, botUsername: data.result?.username ? `@${data.result.username}` : undefined };
+
+    return {
+      ok: true,
+      botUsername: data.result?.username ? `@${data.result.username}` : undefined,
+      botId: data.result?.id
+    };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Network error reaching Telegram API';
-    return { ok: false, error: message };
+    return {
+      ok: false,
+      code: 'NETWORK_ERROR',
+      error: `Failed to contact Telegram API: ${message}`
+    };
   }
 }
 
@@ -248,14 +370,17 @@ export async function verifyTelegramBot(): Promise<{ ok: boolean; botUsername?: 
  * Sends a structured alert to Telegram
  */
 export async function sendTelegramAlert(payload: TelegramAlertPayload): Promise<TelegramResponse> {
-  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
-  const chatId = process.env.TELEGRAM_CHAT_ID?.trim();
+  const rawToken = process.env.TELEGRAM_BOT_TOKEN;
+  const rawChatId = process.env.TELEGRAM_CHAT_ID;
+
+  const cleanToken = sanitizeBotToken(rawToken);
+  const cleanChatId = sanitizeChatId(rawChatId);
 
   // Validate server configuration
-  if (!token || !chatId) {
+  if (!cleanToken || !cleanChatId) {
     const missing: string[] = [];
-    if (!token) missing.push('TELEGRAM_BOT_TOKEN');
-    if (!chatId) missing.push('TELEGRAM_CHAT_ID');
+    if (!cleanToken) missing.push('TELEGRAM_BOT_TOKEN');
+    if (!cleanChatId) missing.push('TELEGRAM_CHAT_ID');
     return {
       ok: false,
       code: 'MISSING_CREDENTIALS',
@@ -285,7 +410,7 @@ export async function sendTelegramAlert(payload: TelegramAlertPayload): Promise<
         delivered: false,
         duplicate: true,
         message: 'Notification already delivered within cooldown window.',
-        chatId: maskChatId(chatId)
+        chatId: maskChatId(cleanChatId)
       };
     }
   }
@@ -294,14 +419,15 @@ export async function sendTelegramAlert(payload: TelegramAlertPayload): Promise<
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 9000);
+    const sendMessageUrl = `https://api.telegram.org/bot${cleanToken}/sendMessage`;
 
-    const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const resp = await fetch(sendMessageUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        chat_id: chatId,
+        chat_id: cleanChatId,
         text,
         parse_mode: 'HTML',
         disable_web_page_preview: true
@@ -315,19 +441,21 @@ export async function sendTelegramAlert(payload: TelegramAlertPayload): Promise<
 
     if (!data.ok) {
       let sanitizedError = data.description || 'Telegram API request rejected';
-      if (data.error_code === 401) {
+      if (data.error_code === 404 || resp.status === 404) {
+        sanitizedError = `Telegram API returned 404 Not Found. Verify TELEGRAM_BOT_TOKEN format in Vercel settings.`;
+      } else if (data.error_code === 401 || resp.status === 401) {
         sanitizedError = 'Unauthorized: Telegram Bot Token is invalid or expired.';
       } else if (data.error_code === 400 && String(data.description).includes('chat not found')) {
-        sanitizedError = `Bad Request: Chat ID (${maskChatId(chatId)}) not found. For private chats, the user must first open Telegram and press /start with the bot.`;
+        sanitizedError = `Bad Request: Chat ID (${maskChatId(cleanChatId)}) not found. For private chats, the user must first open Telegram, search your bot, and press /start.`;
       } else if (data.error_code === 403) {
-        sanitizedError = `Forbidden: Bot is blocked by the user or lacks permission to post in Chat ID (${maskChatId(chatId)}).`;
+        sanitizedError = `Forbidden: Bot is blocked by the user or lacks permission to post in Chat ID (${maskChatId(cleanChatId)}).`;
       }
 
       return {
         ok: false,
-        code: `TELEGRAM_${data.error_code || 'ERROR'}`,
+        code: `TELEGRAM_${data.error_code || resp.status || 'ERROR'}`,
         error: sanitizedError,
-        chatId: maskChatId(chatId)
+        chatId: maskChatId(cleanChatId)
       };
     }
 
@@ -340,7 +468,7 @@ export async function sendTelegramAlert(payload: TelegramAlertPayload): Promise<
       ok: true,
       delivered: true,
       messageId: data.result?.message_id,
-      chatId: maskChatId(chatId),
+      chatId: maskChatId(cleanChatId),
       message: 'Telegram alert successfully transmitted.'
     };
   } catch (err: unknown) {
